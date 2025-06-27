@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from ultralytics import YOLO
+import time
 
 # YOLOv8 모델 로드 및 초기화
 model = YOLO('/home/hkit/Pictures/test/yolov8_custom14/weights/best.pt')
@@ -9,18 +10,24 @@ model.fuse()    # 모델 최적화 ->속도 향상 -> CPU일 때 향상률 ↑
 _ = model(np.zeros((360, 640, 3), dtype=np.uint8))  # 워밍업
 
 # 동영상 로드
-cap = cv2.VideoCapture('/home/hkit/Pictures/road_video2.mp4')  # 동영상 열기
+cap = cv2.VideoCapture('/home/hkit/Pictures/output_video.mp4')  # 동영상 열기
 resize_width, resize_height = 640, 360  # 사이즈 변환
 fps = cap.get(cv2.CAP_PROP_FPS) # 동영상 fps값 추출 (fps = 24)
-delay = int(1000 // (fps*8)) # (fps*8)로 동영상 속도 개선
-                             #  *8 하면 자율주행에 있어서 FPS에 영향이 없는가?
-                             #  동영상이 너무 빨라 실시간 판단과 처리에 영향 줄 속도가 아니면 없다.
+video_length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  # 동영상 전체 프레임 수
+delay = int(1000 // (fps * 8))  # (fps*8)로 동영상 속도 개선
 
 # 클래스 이름 정의
 class_names = {
     0: "vehicle", 1: "big vehicle", 4: "bike",
     5: "human", 6: "animals", 7: "obstacles"
 }
+
+# 카메라 초점 거리 (픽셀 단위) 기본값
+focal_length = 700  # 초점거리 (적절하게 설정)
+
+# 차량의 실제 크기 (미터 단위) - vehicle과 big vehicle 구분
+vehicle_real_length = 4.0  # 일반 차량 크기 (최대 4미터)
+big_vehicle_real_length = 5.0  # 대형 차량 크기 (최소 5미터 이상)
 
 # 박스가 ROI 안에 일정 비율 이상 들어갔는지 확인하는 함수
 def inside_roi(box, mask, threshold):   
@@ -93,6 +100,24 @@ warning_bottom, warning_top = 360, 260
 danger_threshold = 0.2    # 0.1은 좌우 다 잡아버림.
 warning_threshold = 0.3
 
+# 거리 계산 함수
+def calculate_distance(vehicle_screen_width, vehicle_real_length):
+    """차량의 화면 너비와 실제 차량 크기를 비교하여 거리 계산"""
+    return (focal_length * vehicle_real_length) / vehicle_screen_width
+
+# 트랙바 콜백 함수
+def update_video_position(val):
+    """트랙바 값에 따라 동영상 재생 위치를 업데이트"""
+    cap.set(cv2.CAP_PROP_POS_FRAMES, val)
+
+# 트랙바 생성
+cv2.namedWindow('YOLOv8 ROI Detection')
+cv2.createTrackbar('Video Position', 'YOLOv8 ROI Detection', 0, video_length - 1, update_video_position)
+
+# FPS 측정을 위한 변수
+prev_frame_time = 0
+new_frame_time = 0
+
 while cap.isOpened():
 
     # 프레임 읽고 사이즈 조정
@@ -106,7 +131,7 @@ while cap.isOpened():
     mask_danger = np.zeros((resize_height, resize_width), dtype=np.uint8)
     mask_warning = np.zeros((resize_height, resize_width), dtype=np.uint8)
 
-    # dange ROI 생성
+    # danger ROI 생성
     danger_roi = create_trapezoid_roi(frame, danger_bottom, danger_top)
     if danger_roi is not None:
         cv2.fillPoly(mask_danger, [danger_roi], 255)
@@ -145,7 +170,6 @@ while cap.isOpened():
             # Danger ROI가 없으면 Warning ROI 전체를 그림
             cv2.polylines(roi_overlay, [warning_roi], isClosed=True, color=(0, 255, 255), thickness=3)
 
-
     # 객체 탐지
     results = model(frame)
     boxes = results[0].boxes.xyxy.cpu().numpy()
@@ -167,10 +191,29 @@ while cap.isOpened():
         else:
             color = (0, 255, 0)
 
+        # 차량의 화면 상 너비 계산
+        vehicle_screen_width = x2 - x1
+
+        # 거리 계산 (차량에 대해서만 계산)
+        if class_id == 0 or class_id == 1:  # big vehicle과 vehicle에 대해서만 거리 계산
+            vehicle_real_length_used = vehicle_real_length if class_id == 0 else big_vehicle_real_length  # 4m 또는 5m
+            distance = calculate_distance(vehicle_screen_width, vehicle_real_length_used)
+
+            # 거리 표시
+            cv2.putText(frame, f"Dis: {distance:.2f}[m]", (x1, y2 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+
         # 바운딩 박스, 클래스별 라벨 표시
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
         cv2.putText(frame, class_name, (x1, y1 - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+    # FPS 계산
+    new_frame_time = time.time()  # 현재 시간을 프레임 처리 시간으로 저장
+    fps_value = 1 / (new_frame_time - prev_frame_time)  # FPS 계산
+    prev_frame_time = new_frame_time  # 이전 프레임 시간 업데이트
+
+    # FPS 출력
+    cv2.putText(frame, f"FPS: {fps_value:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
     # 화면 표시
     overlay = cv2.addWeighted(frame, 1.0, roi_overlay, 0.3, 0)
