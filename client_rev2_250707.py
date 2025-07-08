@@ -18,10 +18,6 @@ VIDEO_SOURCE = '/home/hkit/Pictures/video/rural_cut.webm'
 
 resize_width, resize_height = 640, 480 #300
 
-# --- 성능 개선 설정 ---
-JPEG_QUALITY = 40   # 낮은 품질로 압축률을 높임
-
-
 def main():
     fps = 0.0
     prev_frame_time = time.time()
@@ -53,8 +49,8 @@ def main():
         # 전송 전에 영상 축소 (640, 480)
         frame = cv2.resize(frame, (resize_width, resize_height))
 
-        # JPEG 인코딩 품질 JPEG_QUALITY로 조정하며 낮춤 -> FPS 향상
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+        # JPEG 인코딩 품질 (60->40) 낮추어 FPS 향상
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 40]
         result, encoded_frame = cv2.imencode('.jpg', frame, encode_param)
         if not result:
             print("WARNING: 프레임 인코딩에 실패했습니다.")
